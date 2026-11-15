@@ -1,0 +1,8 @@
+body {
+  background: #f3f0e8;
+  color: #1f2933;
+}
+
+h1, h2, .fw-semibold {
+  letter-spacing: 0;
+}
