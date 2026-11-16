@@ -4,7 +4,16 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import AssemblyView from "./components/AssemblyView";
 import LineChart from "./components/LineChart";
 import SetupDiagram from "./components/SetupDiagram";
-import { landDiametersMm, STATOR_OVERHANG_MM, washerBayCount } from "./cad/assembly";
+import {
+  distributorConeAngleDeg,
+  landDiametersMm,
+  STATOR_ABOVE_TORUS_MM,
+  STATOR_OVERHANG_MM,
+  STATOR_SKIN_MM,
+  STATOR_TORUS_INDENT_MM,
+  STATOR_WALL_DEPTH_MM,
+  washerBayCount,
+} from "./cad/assembly";
 import {
   GRAPHITE_DISK,
   SMALL_DISK,
@@ -57,7 +66,7 @@ function normalizeSetup(raw: Record<string, unknown>): Setup {
   const base = {
     ...SMALL_DISK,
     ...rest,
-    statorMm: typeof rest.statorMm === "number" ? rest.statorMm : 4,
+    statorMm: 1,
     washerMm,
   };
   const hasGap = typeof gapUm === "number" && gapUm > 0;
@@ -541,7 +550,7 @@ const Explorer: React.FC = () => {
                 </ul>
               </div>
             </Tab>
-            <Tab eventKey="geometry" title="Geometry" mountOnEnter unmountOnExit>
+            <Tab eventKey="geometry" title="Geometry" mountOnEnter>
               <div className="mb-2 d-flex flex-wrap align-items-center gap-3">
                 <Form.Group className="d-flex align-items-center gap-2" style={{ maxWidth: 280 }}>
                   <Form.Label className="mb-0 small text-nowrap">Washer diameter</Form.Label>
@@ -577,11 +586,11 @@ const Explorer: React.FC = () => {
                 )}
               </div>
               <p className="small text-secondary mt-2 mb-0">
-                Lean disk with 1 mm skins, open outer edge (no rim wall), {washerBayCount(setup, setup.washerMm)} radial walls sized so {(setup.washerMm / 10).toFixed(1)} cm washers fit between two ribs and the retainer ring.
-                Cone angle and wall height are true: the disk walls are {setup.thicknessMm.toFixed(2)} mm high and the stator is a {setup.statorMm.toFixed(2)} mm plate.
+                Lean disk with 1 mm skins, outer rim wall inset 1 cm from the OD, open inner hole (no inner rim), {washerBayCount(setup, setup.washerMm)} radial walls sized so {(setup.washerMm / 10).toFixed(1)} cm washers fit between two ribs and the retainer ring.
+                Cone angle and wall height are true: the disk walls rise {setup.thicknessMm.toFixed(2)} mm above the local cone and the stator is a {STATOR_SKIN_MM.toFixed(0)} mm plate with {STATOR_WALL_DEPTH_MM.toFixed(0)} mm mirrored underside ribs/rim/retainer. The plate sits {STATOR_ABOVE_TORUS_MM.toFixed(0)} mm above the torus crown (walls indent {STATOR_TORUS_INDENT_MM.toFixed(0)} mm). Distributor cones seat in matching holes; orifices stay flush with the flying face.
                 Stator overhang {STATOR_OVERHANG_MM.toFixed(1)} mm each edge: disk Ø{landDiametersMm(setup).diskOuterMm.toFixed(1)} / hole Ø{landDiametersMm(setup).diskInnerMm.toFixed(1)} mm → stator Ø{landDiametersMm(setup).statorOuterMm.toFixed(1)} / hole Ø{landDiametersMm(setup).statorInnerMm.toFixed(1)} mm.
-                Distributor: hollow torus on the feed circle, Ø1 cm bore, 1.5 mm wall, under the stator.
-                The cone is high at the hole and falls {(state.coneRiseM * 1e3).toFixed(1)} mm toward the rim. Each hole is {setup.orificeMm.toFixed(3)} mm diameter, on the midpoint circle under the disk.
+                Distributor: hollow torus with steep orifice cones at {distributorConeAngleDeg(setup.orificeMm).toFixed(1)}° (tangent to the tube), Ø1 cm bore, 1 mm wall; 5 cm horizontal inlet on the −Y side (between holes).
+                The cone is low at the hole and rises {(state.coneRiseM * 1e3).toFixed(1)} mm toward the rim. Each hole is {setup.orificeMm.toFixed(3)} mm diameter, on the midpoint circle under the disk.
                 The air gap is the design hover clearance, drawn {(drawnGap / (gapUm * 1e-3)).toFixed(0)}× its real {gapUm.toFixed(0)} µm so the two parts stay separate. Drag to orbit.
               </p>
             </Tab>

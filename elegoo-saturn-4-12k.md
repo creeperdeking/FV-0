@@ -87,6 +87,19 @@ Loaded machine orifice bearings often fly at **5–30 µm**. That needs faces ma
 
 Release film: **PFA** (not FEP), per the product page.
 
+### Resin bottle on hand (label)
+
+ELEGOO 405 nm bottle, **1000 g**. Settings: search resin profiles on [elegoo.com](https://elegoo.com).
+
+| Item | Value |
+| --- | --- |
+| UV wavelength | **405 nm** |
+| Quantity | **1000 g** |
+| Production (P) | 07/NOV/2024 |
+| Expiry (E) | 06/NOV/2026 |
+
+Label also notes: see production and expiry date on the bottle.
+
 ## Machine envelope
 
 | Item | Value |

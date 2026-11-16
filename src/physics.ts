@@ -556,7 +556,7 @@ const SMALL_CORE: Omit<Setup, "orificeMm"> = {
   innerMm: 125 * PROTOTYPE_SCALE,
   angleDeg: 5,
   thicknessMm: 8 * PROTOTYPE_SCALE,
-  statorMm: 4 * PROTOTYPE_SCALE,
+  statorMm: 1,
   density: 1200,
   nOrifices: 12,
   gapUm: 250,
@@ -576,7 +576,7 @@ const GRAPHITE_CORE: Omit<Setup, "orificeMm"> = {
   outerMm: 8000,
   innerMm: 6550,
   thicknessMm: 8,
-  statorMm: 4,
+  statorMm: 1,
   gapUm: 157,
   density: 1770,
 };
