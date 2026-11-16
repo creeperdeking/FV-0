@@ -11,10 +11,6 @@
     "n_orifices": 12,
     "orifice_mm": 0.4,
     "feed_frac": 0.5,
-    "cd": 0.7,
-    "gap_um": 50.0,
-    "rpm": 60.0,
-    "nozzle_angle": 0.0,
-    "eta": 0.5
+    "cd": 0.7
   }
 }

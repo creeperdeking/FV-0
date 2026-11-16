@@ -1,0 +1,30 @@
+{
+  "Small prototype": {
+    "outerMm": 200,
+    "innerMm": 100,
+    "angleDeg": 10,
+    "thicknessMm": 8,
+    "statorMm": 3.7333333333333334,
+    "density": 1800,
+    "nOrifices": 22,
+    "gapUm": 150,
+    "feedFrac": 0.5,
+    "cd": 0.7,
+    "washerMm": 30,
+    "orificeMm": 0.3
+  },
+  "Isotropic graphite 8 m": {
+    "outerMm": 8000,
+    "innerMm": 4800,
+    "angleDeg": 5,
+    "thicknessMm": 8,
+    "statorMm": 4,
+    "density": 1800,
+    "nOrifices": 26,
+    "gapUm": 300,
+    "feedFrac": 0.5,
+    "cd": 0.7,
+    "washerMm": 20,
+    "orificeMm": 0.6
+  }
+}

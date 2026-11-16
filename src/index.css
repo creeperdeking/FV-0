@@ -6,3 +6,119 @@ body {
 h1, h2, .fw-semibold {
   letter-spacing: 0;
 }
+
+.controls .control-heading {
+  margin: 0.65rem 0 0.2rem;
+  font-size: 0.8rem;
+}
+
+.controls .control-slider {
+  margin-bottom: 0.3rem;
+}
+
+.controls .control-cm .form-control {
+  padding: 0.2rem 0.45rem;
+  font-size: 0.85rem;
+  height: calc(1.4em + 0.4rem + 2px);
+}
+
+.controls .control-slider .form-label {
+  margin-bottom: 0;
+  font-size: 0.78rem;
+  line-height: 1.15;
+}
+
+.controls .slider-value-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.controls .slider-value {
+  cursor: text;
+  border-bottom: 1px dashed transparent;
+}
+
+.controls .slider-value:hover {
+  border-bottom-color: #8aa096;
+}
+
+.controls .slider-value-input {
+  width: 4.6rem;
+  padding: 0 0.25rem;
+  font-size: 0.78rem;
+  line-height: 1.2;
+  height: 1.35rem;
+  text-align: right;
+}
+
+.controls .form-range {
+  height: 0.85rem;
+}
+
+.controls .form-range::-webkit-slider-runnable-track {
+  height: 0.28rem;
+}
+
+.controls .form-range::-webkit-slider-thumb {
+  width: 0.72rem;
+  height: 0.72rem;
+  margin-top: -0.22rem;
+}
+
+.controls .form-range::-moz-range-track {
+  height: 0.28rem;
+}
+
+.controls .form-range::-moz-range-thumb {
+  width: 0.72rem;
+  height: 0.72rem;
+}
+
+.line-chart-plot {
+  position: relative;
+}
+
+.line-chart-plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none;
+}
+
+.line-chart-tooltip {
+  position: absolute;
+  z-index: 1;
+  transform: translate(12px, -50%);
+  pointer-events: none;
+  background: #14221f;
+  color: #fff;
+  border-radius: 0.55rem;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.line-chart-tooltip.is-left {
+  transform: translate(calc(-100% - 12px), -50%);
+}
+
+.line-chart-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #4d615b;
+}
+
+.line-chart-key i {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 999px;
+}
+
+.setup-diagram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}

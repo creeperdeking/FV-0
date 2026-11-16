@@ -1,32 +1,118 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Col, Container, Form, Row, Tab, Tabs } from "react-bootstrap";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AssemblyView from "./components/AssemblyView";
 import LineChart from "./components/LineChart";
+import SetupDiagram from "./components/SetupDiagram";
+import { landDiametersMm, STATOR_OVERHANG_MM, washerBayCount } from "./cad/assembly";
 import {
   GRAPHITE_DISK,
   SMALL_DISK,
-  angleForOneRev,
-  equilibriumGapM,
   evaluateBearing,
   gapSweep,
+  hoverGapUmForOrifice,
   massLabel,
   pressureCurve,
+  solveOrificeMm,
   type Setup,
 } from "./physics";
+import { sizePneumatics } from "./pneumatics";
 
 const BUILT_IN = [SMALL_DISK, GRAPHITE_DISK];
 const BUILT_IN_NAMES = ["Small prototype", "Isotropic graphite 8 m"];
+const TAB_KEYS = ["simulation", "geometry", "setup"] as const;
+type TabKey = (typeof TAB_KEYS)[number];
+const TAB_STORAGE_KEY = "fv0-active-tab";
+
+function readStoredTab(): TabKey {
+  try {
+    const raw = localStorage.getItem(TAB_STORAGE_KEY);
+    if (raw && (TAB_KEYS as readonly string[]).includes(raw)) return raw as TabKey;
+  } catch {
+    /* ignore */
+  }
+  return "simulation";
+}
+
+function normalizeSetup(raw: Record<string, unknown>): Setup {
+  const {
+    rpm: _rpm,
+    nozzleAngle: _nozzleAngle,
+    eta: _eta,
+    orificeMm,
+    gapUm,
+    supplyBar,
+    ...rest
+  } = raw as Partial<Setup> & {
+    orificeMm?: number;
+    gapUm?: number;
+    supplyBar?: number;
+    rpm?: number;
+    nozzleAngle?: number;
+    eta?: number;
+  };
+  const washerRaw = (rest as { washerMm?: unknown }).washerMm;
+  const washerMm =
+    typeof washerRaw === "number" && Number.isFinite(washerRaw) && washerRaw > 0 ? washerRaw : SMALL_DISK.washerMm;
+  const base = {
+    ...SMALL_DISK,
+    ...rest,
+    statorMm: typeof rest.statorMm === "number" ? rest.statorMm : 4,
+    washerMm,
+  };
+  const hasGap = typeof gapUm === "number" && gapUm > 0;
+  const hasOrifice = typeof orificeMm === "number" && orificeMm > 0;
+  const hasSupply = typeof supplyBar === "number" && supplyBar > 0;
+  if (hasGap && hasOrifice) return { ...base, gapUm, orificeMm };
+  if (hasGap && hasSupply) {
+    const solved = solveOrificeMm({ ...base, gapUm, supplyBar });
+    return { ...base, gapUm, orificeMm: solved ?? base.orificeMm };
+  }
+  if (hasOrifice && hasSupply) {
+    const migrated = hoverGapUmForOrifice({ ...base, orificeMm, supplyBar });
+    return { ...base, orificeMm, gapUm: migrated ?? base.gapUm };
+  }
+  if (hasOrifice) return { ...base, orificeMm, gapUm: hasGap ? gapUm : base.gapUm };
+  return { ...base, gapUm: hasGap ? gapUm : base.gapUm };
+}
 
 function storedSetups(): Record<string, Setup> {
   try {
     const raw = localStorage.getItem("fv0-setups");
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, Setup>;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed).map(([key, value]) => [key, normalizeSetup((value ?? {}) as Record<string, unknown>)]),
+    );
   } catch {
     return {};
   }
+}
+
+function normalizeSaved(raw: unknown): Record<string, Setup> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).map(([key, value]) => [
+      key,
+      normalizeSetup((value ?? {}) as Record<string, unknown>),
+    ]),
+  );
+}
+
+async function fetchSetups(): Promise<Record<string, Setup>> {
+  const response = await fetch("/api/setups");
+  if (!response.ok) throw new Error("Could not read save/setups.json");
+  return normalizeSaved(await response.json());
+}
+
+async function persistSetups(setups: Record<string, Setup>): Promise<void> {
+  const response = await fetch("/api/setups", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(setups),
+  });
+  if (!response.ok) throw new Error("Could not write save/setups.json");
 }
 
 function Slider(props: {
@@ -39,12 +125,61 @@ function Slider(props: {
   unit: string;
   onChange: (value: number) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelRef = useRef(false);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const startEdit = () => {
+    setText(props.value.toFixed(props.digits));
+    setEditing(true);
+  };
+
+  const commit = () => {
+    if (cancelRef.current) {
+      cancelRef.current = false;
+      setEditing(false);
+      return;
+    }
+    const parsed = Number(text.replace(",", ".").trim());
+    setEditing(false);
+    if (!Number.isFinite(parsed)) return;
+    const clamped = Math.min(props.max, Math.max(props.min, parsed));
+    props.onChange(clamped);
+  };
+
   return (
-    <Form.Group className="mb-3">
-      <Form.Label className="d-flex justify-content-between mb-1">
+    <Form.Group className="control-slider">
+      <Form.Label className="d-flex justify-content-between">
         <span>{props.label}</span>
-        <span className="text-secondary">
-          {props.value.toFixed(props.digits)} {props.unit}
+        <span className="text-secondary slider-value-wrap">
+          {editing ? (
+            <Form.Control
+              ref={inputRef}
+              className="slider-value-input"
+              value={text}
+              aria-label={`${props.label} value`}
+              inputMode="decimal"
+              onChange={(event) => setText(event.target.value)}
+              onBlur={commit}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") {
+                  cancelRef.current = true;
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+          ) : (
+            <span className="slider-value" title="Double-click to type a value" onDoubleClick={startEdit}>
+              {props.value.toFixed(props.digits)}
+            </span>
+          )}
+          {props.unit ? <span>{props.unit}</span> : null}
         </span>
       </Form.Label>
       <Form.Range
@@ -56,6 +191,63 @@ function Slider(props: {
       />
     </Form.Group>
   );
+}
+
+function CmField(props: {
+  label: string;
+  valueMm: number;
+  minCm: number;
+  maxCm: number;
+  onChangeMm: (mm: number) => void;
+}) {
+  const [text, setText] = useState(() => formatCm(props.valueMm));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setText(formatCm(props.valueMm));
+  }, [props.valueMm, focused]);
+
+  const commit = (raw: string) => {
+    const cm = Number(raw.replace(",", "."));
+    if (!Number.isFinite(cm)) {
+      setText(formatCm(props.valueMm));
+      return;
+    }
+    const clamped = Math.min(props.maxCm, Math.max(props.minCm, cm));
+    props.onChangeMm(clamped * 10);
+    setText(formatCm(clamped * 10));
+  };
+
+  return (
+    <Form.Group className="control-slider control-cm">
+      <Form.Label className="d-flex justify-content-between">
+        <span>{props.label}</span>
+        <span className="text-secondary">cm</span>
+      </Form.Label>
+      <Form.Control
+        type="text"
+        inputMode="decimal"
+        value={text}
+        aria-label={`${props.label} in centimetres`}
+        onFocus={() => setFocused(true)}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={() => {
+          setFocused(false);
+          commit(text);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+        }}
+      />
+    </Form.Group>
+  );
+}
+
+function formatCm(mm: number): string {
+  const cm = mm / 10;
+  return Number.isInteger(cm) ? String(cm) : cm.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function Metric(props: { label: string; value: string }) {
@@ -73,13 +265,72 @@ function force(value: number): string {
   return `${value.toFixed(2)} N`;
 }
 
+function pocketGauge(pressurePa: number): string {
+  const gaugePa = pressurePa - 101325;
+  if (Math.abs(gaugePa) < 1000) return `${Math.round(gaugePa)} Pa`;
+  return `${(gaugePa / 1e5).toFixed(2)} bar`;
+}
+
+function supplyGauge(bar: number | null): string {
+  if (bar === null || !Number.isFinite(bar)) return "impossible";
+  const pa = bar * 1e5;
+  if (Math.abs(pa) < 1000) return `${Math.round(pa)} Pa`;
+  if (bar < 1) return `${bar.toFixed(3)} bar`;
+  return `${bar.toFixed(2)} bar`;
+}
+
 const Explorer: React.FC = () => {
+  const [saved, setSaved] = useState<Record<string, Setup>>({});
   const [setup, setSetup] = useState<Setup>(SMALL_DISK);
-  const [saved, setSaved] = useState<Record<string, Setup>>(storedSetups);
   const [name, setName] = useState("");
-  const [choice, setChoice] = useState(BUILT_IN_NAMES[0]);
+  const [choice, setChoice] = useState(BUILT_IN_NAMES[0] ?? "");
+  const [saveError, setSaveError] = useState("");
+  const [tab, setTab] = useState<TabKey>(readStoredTab);
+  const [catalogReady, setCatalogReady] = useState(false);
+  const [cadToken, setCadToken] = useState(0);
+  const untouched = useRef(true);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, tab);
+    } catch {
+      /* ignore */
+    }
+  }, [tab]);
+
+  useEffect(() => {
+    let cancel = false;
+    const loadFile = async () => {
+      try {
+        let setups = await fetchSetups();
+        if (Object.keys(setups).length === 0) {
+          const legacy = storedSetups();
+          if (Object.keys(legacy).length > 0) {
+            await persistSetups(legacy);
+            localStorage.removeItem("fv0-setups");
+            setups = legacy;
+          }
+        }
+        if (cancel) return;
+        setSaved(setups);
+        const initialName = BUILT_IN_NAMES[0] ?? "";
+        const initial = setups[initialName];
+        if (untouched.current && initial) setSetup(initial);
+        setSaveError("");
+      } catch (error) {
+        if (!cancel) setSaveError(error instanceof Error ? error.message : "Could not read saves");
+      } finally {
+        if (!cancel) setCatalogReady(true);
+      }
+    };
+    void loadFile();
+    return () => {
+      cancel = true;
+    };
+  }, []);
 
   const patch = (partial: Partial<Setup>) => {
+    untouched.current = false;
     setSetup((current) => {
       const next = { ...current, ...partial };
       if (next.innerMm > next.outerMm - 5) next.innerMm = next.outerMm - 5;
@@ -89,58 +340,91 @@ const Explorer: React.FC = () => {
 
   const result = useMemo(() => {
     const state = evaluateBearing(setup);
-    const hover = equilibriumGapM(setup);
-    const sweep = gapSweep(setup);
-    const pressure = pressureCurve(setup);
-    const tilt = hover === null ? 0 : angleForOneRev(setup, Math.min(hover, 399e-6));
-    return { state, hover, sweep, pressure, tilt };
+    const gapM = Math.max(setup.gapUm, 1) * 1e-6;
+    const supplyBar = state.supplyBar ?? 0;
+    const sweep = gapSweep(setup, supplyBar);
+    const pressure = pressureCurve(setup, supplyBar, gapM);
+    const peakBar = Math.max(0, ...pressure.gaugeBar);
+    const pressureAsPa = peakBar < 0.01;
+    return {
+      state,
+      sweep,
+      pressure: {
+        radiusMm: pressure.radiusMm,
+        values: pressureAsPa ? pressure.gaugeBar.map((bar) => bar * 1e5) : pressure.gaugeBar,
+        yUnit: pressureAsPa ? "Pa" : "bar",
+        seriesName: pressureAsPa ? "Gauge pressure (Pa)" : "Gauge pressure (bar)",
+      },
+      gapM,
+    };
   }, [setup]);
 
-  const names = [...BUILT_IN_NAMES, ...Object.keys(saved).sort()];
-  const drawnGap = Math.max(setup.gapUm * 1e-3, 0.04 * setup.outerMm);
+  const names = [...BUILT_IN_NAMES, ...Object.keys(saved).filter((item) => !BUILT_IN_NAMES.includes(item)).sort()];
+  const gapUm = setup.gapUm;
+  const drawnGap = Math.max(gapUm * 1e-3, 0.04 * setup.outerMm);
 
   const save = () => {
-    const trimmed = name.trim();
-    if (!trimmed || BUILT_IN_NAMES.includes(trimmed)) return;
-    const next = { ...saved, [trimmed]: setup };
-    localStorage.setItem("fv0-setups", JSON.stringify(next));
-    setSaved(next);
-    setChoice(trimmed);
+    const target = name.trim() || choice;
+    if (!target) return;
+    const next = { ...saved, [target]: setup };
+    void persistSetups(next)
+      .then(() => {
+        setSaved(next);
+        setChoice(target);
+        setName("");
+        setSaveError("");
+      })
+      .catch((error: unknown) => {
+        setSaveError(error instanceof Error ? error.message : "Could not write saves");
+      });
   };
 
   const load = (selected: string) => {
+    untouched.current = false;
     setChoice(selected);
+    const stored = saved[selected];
+    if (stored) {
+      setSetup(stored);
+      setCadToken((token) => token + 1);
+      return;
+    }
     const builtIn = BUILT_IN_NAMES.indexOf(selected);
     if (builtIn >= 0) {
       const preset = BUILT_IN[builtIn];
-      if (preset) setSetup(preset);
-      return;
+      if (preset) {
+        setSetup(preset);
+        setCadToken((token) => token + 1);
+      }
     }
-    const preset = saved[selected];
-    if (preset) setSetup(preset);
   };
 
   const remove = () => {
     if (BUILT_IN_NAMES.includes(choice)) return;
     const next = { ...saved };
     delete next[choice];
-    localStorage.setItem("fv0-setups", JSON.stringify(next));
-    setSaved(next);
-    setChoice(BUILT_IN_NAMES[0]);
+    void persistSetups(next)
+      .then(() => {
+        setSaved(next);
+        setChoice(BUILT_IN_NAMES[0]);
+        setSaveError("");
+      })
+      .catch((error: unknown) => {
+        setSaveError(error instanceof Error ? error.message : "Could not write saves");
+      });
   };
 
-  const { state, hover, sweep, pressure, tilt } = result;
-  const hoverLabel = hover === null ? "will not float" : hover >= 399e-6 ? "> 400 µm" : `${Math.round(hover * 1e6)} µm`;
+  const { state, sweep, pressure } = result;
+  const pneumatics = useMemo(() => sizePneumatics(setup, state), [setup, state]);
 
   return (
     <Container fluid className="py-3 px-3 px-lg-4">
-      <h1 className="h3 mb-1">FV-0 conical air bearing</h1>
+      <h1 className="h3 mb-1">FV-0 conical disk air suspension</h1>
       <p className="text-secondary mb-3">
-        Orifice-fed film under a horizontal cone. Lift, stiffness, and air use update as you move the controls.
+        Set the hover gap and the orifice diameter. The model finds the supply pressure that lifts the disk at that clearance.
       </p>
       <Row className="g-4">
         <Col lg={4} xl={3}>
-          <div className="border rounded p-3 bg-white">
+          <div className="border rounded p-3 bg-white controls">
             <h2 className="h6">Saved setups</h2>
             <Form.Select className="mb-2" value={choice} onChange={(event) => load(event.target.value)} aria-label="Saved setup">
               {names.map((item) => (
@@ -156,37 +440,47 @@ const Explorer: React.FC = () => {
                 Delete
               </Button>
             </div>
-            <h2 className="h6">Disk</h2>
-            <Slider label="Outer diameter" min={80} max={10000} step={1} value={setup.outerMm} digits={0} unit="mm" onChange={(outerMm) => patch({ outerMm })} />
-            <Slider label="Hole diameter" min={20} max={9000} step={1} value={setup.innerMm} digits={0} unit="mm" onChange={(innerMm) => patch({ innerMm })} />
+            {saveError ? (
+              <Alert variant="warning" className="py-2 small">
+                {saveError}
+              </Alert>
+            ) : null}
+            <h2 className="h6 control-heading">Disk</h2>
+            <CmField label="Outer diameter" valueMm={setup.outerMm} minCm={8} maxCm={1000} onChangeMm={(outerMm) => patch({ outerMm })} />
+            <CmField label="Hole diameter" valueMm={setup.innerMm} minCm={2} maxCm={900} onChangeMm={(innerMm) => patch({ innerMm })} />
             <Slider label="Cone angle" min={0.5} max={20} step={0.5} value={setup.angleDeg} digits={1} unit="°" onChange={(angleDeg) => patch({ angleDeg })} />
-            <Slider label="Disk thickness" min={2} max={25} step={0.5} value={setup.thicknessMm} digits={1} unit="mm" onChange={(thicknessMm) => patch({ thicknessMm })} />
+            <Slider label="Disk thickness" min={2} max={25} step={0.5} value={setup.thicknessMm} digits={2} unit="mm" onChange={(thicknessMm) => patch({ thicknessMm })} />
             <Slider label="Density" min={900} max={2700} step={10} value={setup.density} digits={0} unit="kg/m³" onChange={(density) => patch({ density })} />
-            <h2 className="h6">Air injection</h2>
-            <Slider label="Supply pressure" min={0.2} max={6} step={0.1} value={setup.supplyBar} digits={1} unit="bar gauge" onChange={(supplyBar) => patch({ supplyBar })} />
+            <h2 className="h6 control-heading">Air injection</h2>
+            <Slider label="Hover gap" min={10} max={400} step={10} value={setup.gapUm} digits={0} unit="µm" onChange={(gapUm) => patch({ gapUm })} />
+            <Slider label="Orifice diameter" min={0.05} max={5} step={0.01} value={setup.orificeMm} digits={3} unit="mm" onChange={(orificeMm) => patch({ orificeMm })} />
             <Slider label="Number of holes" min={3} max={48} step={1} value={setup.nOrifices} digits={0} unit="" onChange={(nOrifices) => patch({ nOrifices })} />
-            <Slider label="Hole diameter" min={0.15} max={1.5} step={0.05} value={setup.orificeMm} digits={2} unit="mm" onChange={(orificeMm) => patch({ orificeMm })} />
             <Slider label="Feed ring position" min={0.05} max={0.95} step={0.01} value={setup.feedFrac} digits={2} unit="" onChange={(feedFrac) => patch({ feedFrac })} />
             <Slider label="Discharge coefficient" min={0.4} max={0.9} step={0.05} value={setup.cd} digits={2} unit="" onChange={(cd) => patch({ cd })} />
-            <h2 className="h6">Operating point</h2>
-            <Slider label="Film gap" min={10} max={250} step={1} value={setup.gapUm} digits={0} unit="µm" onChange={(gapUm) => patch({ gapUm })} />
-            <Slider label="Rotation" min={0} max={30000} step={10} value={setup.rpm} digits={0} unit="rpm" onChange={(rpm) => patch({ rpm })} />
-            <Slider label="Nozzle tilt" min={0} max={30} step={0.1} value={setup.nozzleAngle} digits={1} unit="°" onChange={(nozzleAngle) => patch({ nozzleAngle })} />
-            <Slider label="Momentum to the disk" min={0.2} max={1} step={0.05} value={setup.eta} digits={2} unit="" onChange={(eta) => patch({ eta })} />
           </div>
         </Col>
         <Col lg={8} xl={9}>
-          <Tabs defaultActiveKey="simulation" className="mb-3">
+          <Tabs
+            activeKey={tab}
+            onSelect={(key) => {
+              if (key && (TAB_KEYS as readonly string[]).includes(key)) setTab(key as TabKey);
+            }}
+            className="mb-3"
+          >
             <Tab eventKey="simulation" title="Simulation">
+              {state.notes.map((note) => (
+                <Alert key={note} variant="warning" className="mb-3">
+                  {note}
+                </Alert>
+              ))}
               <Row className="g-3 mb-3">
                 <Col md={3}><Metric label="Disk weight" value={force(state.weightN)} /></Col>
                 <Col md={3}><Metric label="Axial lift" value={force(state.liftAxialN)} /></Col>
-                <Col md={3}><Metric label="Float margin" value={force(state.floatMarginN)} /></Col>
-                <Col md={3}><Metric label="Equilibrium gap" value={hoverLabel} /></Col>
+                <Col md={3}><Metric label="Supply pressure" value={supplyGauge(state.supplyBar)} /></Col>
                 <Col md={3}><Metric label="Axial stiffness" value={`${(state.stiffnessAxial * 1e-6).toFixed(2)} N/µm`} /></Col>
                 <Col md={3}><Metric label="Radial stiffness" value={`${(state.radialStiffness * 1e-6).toFixed(3)} N/µm`} /></Col>
                 <Col md={3}><Metric label="Air use" value={`${state.volumeFlowNlpm.toFixed(1)} NL/min`} /></Col>
-                <Col md={3}><Metric label="Pocket gauge" value={`${((state.pocketPressurePa - 101325) / 1e5).toFixed(2)} bar`} /></Col>
+                <Col md={3}><Metric label="Pocket gauge" value={pocketGauge(state.pocketPressurePa)} /></Col>
               </Row>
               <Row className="g-4">
                 <Col xl={6}>
@@ -194,7 +488,10 @@ const Explorer: React.FC = () => {
                     <LineChart
                       title="Lift versus gap"
                       x={sweep.gapUm}
-                      xLabel="Gap (µm)"
+                      xLabel="Gap"
+                      xUnit="µm"
+                      yUnit="N"
+                      yLog
                       series={[
                         { name: "Lift (N)", color: "#1f6f8b", values: sweep.liftN },
                         { name: "Disk weight (N)", color: "#c47b2b", values: sweep.gapUm.map(() => state.weightN) },
@@ -207,7 +504,9 @@ const Explorer: React.FC = () => {
                     <LineChart
                       title="Stiffness and air use"
                       x={sweep.gapUm}
-                      xLabel="Gap (µm)"
+                      xLabel="Gap"
+                      xUnit="µm"
+                      yUnit="N/µm · NL/min"
                       series={[
                         { name: "Stiffness (N/µm)", color: "#1f6f8b", values: sweep.stiffnessPerUm },
                         { name: "Air use (NL/min)", color: "#6b8f71", values: sweep.flowNlpm },
@@ -220,51 +519,74 @@ const Explorer: React.FC = () => {
                 <LineChart
                   title="Pressure along the radius"
                   x={pressure.radiusMm}
-                  xLabel="Radius (mm)"
-                  series={[{ name: "Gauge pressure (bar)", color: "#1f6f8b", values: pressure.gaugeBar }]}
+                  xLabel="Radius"
+                  xUnit="mm"
+                  yUnit={pressure.yUnit}
+                  formatY={
+                    pressure.yUnit === "Pa"
+                      ? (value) => `${Math.round(value)}`
+                      : (value) => (Math.abs(value) < 0.01 ? value.toFixed(4) : value.toFixed(3))
+                  }
+                  series={[{ name: pressure.seriesName, color: "#1f6f8b", values: pressure.values }]}
                 />
                 <p className="small text-secondary mb-0">Feed ring at {(state.feedRadiusM * 1e3).toFixed(1)} mm. Pressure peaks at the holes and falls to atmosphere at both edges.</p>
               </div>
-              <Row className="g-4 mt-1">
-                <Col md={6}>
-                  <div className="border rounded p-3 bg-white h-100">
-                    <h2 className="h6">Rotation</h2>
-                    <ul className="mb-0">
-                      <li>Tip speed: {state.tipSpeedMs.toFixed(2)} m/s</li>
-                      <li>Viscous torque: {(state.viscousTorqueNm * 1e3).toFixed(3)} mN·m</li>
-                      <li>Jet speed: {state.jetSpeedMs.toFixed(0)} m/s</li>
-                      <li>Tilt for 1 rev/s at the hover gap: {tilt.toFixed(2)}°</li>
-                      <li>Free speed at the current tilt: {state.freeSpinRpm.toFixed(0)} rpm</li>
-                    </ul>
-                  </div>
-                </Col>
-                <Col md={6}>
-                  <div className="border rounded p-3 bg-white h-100">
-                    <h2 className="h6">Geometry</h2>
-                    <ul className="mb-0">
-                      <li>Cone rise, hole to rim: {(state.coneRiseM * 1e3).toFixed(2)} mm</li>
-                      <li>Projected area: {(state.areaM2 * 1e4).toFixed(1)} cm²</li>
-                      <li>Disk mass: {massLabel(state.massKg)}</li>
-                      <li>Knudsen number: {state.knudsen.toFixed(4)}</li>
-                    </ul>
-                  </div>
-                </Col>
-              </Row>
-              {state.notes.map((note) => (
-                <Alert key={note} variant="warning" className="mt-3 mb-0">
-                  {note}
-                </Alert>
-              ))}
+              <div className="border rounded p-3 bg-white mt-4">
+                <h2 className="h6">Geometry</h2>
+                <ul className="mb-0">
+                  <li>Cone rise, hole to rim: {(state.coneRiseM * 1e3).toFixed(2)} mm</li>
+                  <li>Projected area: {(state.areaM2 * 1e4).toFixed(1)} cm²</li>
+                  <li>Disk mass: {massLabel(state.massKg)}</li>
+                  <li>Knudsen number: {state.knudsen.toFixed(4)}</li>
+                </ul>
+              </div>
             </Tab>
             <Tab eventKey="geometry" title="Geometry" mountOnEnter unmountOnExit>
+              <div className="mb-2 d-flex flex-wrap align-items-center gap-3">
+                <Form.Group className="d-flex align-items-center gap-2" style={{ maxWidth: 280 }}>
+                  <Form.Label className="mb-0 small text-nowrap">Washer diameter</Form.Label>
+                  <Form.Control
+                    type="number"
+                    min={0.5}
+                    max={50}
+                    step={0.1}
+                    value={Number((setup.washerMm / 10).toFixed(2))}
+                    aria-label="Washer diameter in centimetres"
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      if (Number.isFinite(value)) patch({ washerMm: Math.min(500, Math.max(5, value * 10)) });
+                    }}
+                  />
+                  <span className="small text-secondary">cm</span>
+                </Form.Group>
+                <span className="small text-secondary">
+                  {washerBayCount(setup, setup.washerMm)} radial walls (washer bays)
+                </span>
+              </div>
               <div className="border rounded bg-white p-2">
-                <AssemblyView setup={setup} />
+                {catalogReady ? (
+                  <AssemblyView
+                    key={cadToken}
+                    setup={setup}
+                    gapUm={gapUm}
+                    orificeMm={setup.orificeMm}
+                    washerMm={setup.washerMm}
+                  />
+                ) : (
+                  <p className="small text-secondary mb-0 p-3">Loading saved setup…</p>
+                )}
               </div>
               <p className="small text-secondary mt-2 mb-0">
-                Cone angle and thicknesses are true: the disk is {setup.thicknessMm.toFixed(1)} mm and the stator is a 4 mm plate.
-                The cone is high at the hole and falls {(state.coneRiseM * 1e3).toFixed(1)} mm toward the rim. Each hole is its real {setup.orificeMm.toFixed(2)} mm diameter.
-                The air gap is drawn {(drawnGap / (setup.gapUm * 1e-3)).toFixed(0)}× its real {setup.gapUm.toFixed(0)} µm so the two parts stay separate. Drag to orbit.
+                Lean disk with 1 mm skins, open outer edge (no rim wall), {washerBayCount(setup, setup.washerMm)} radial walls sized so {(setup.washerMm / 10).toFixed(1)} cm washers fit between two ribs and the retainer ring.
+                Cone angle and wall height are true: the disk walls are {setup.thicknessMm.toFixed(2)} mm high and the stator is a {setup.statorMm.toFixed(2)} mm plate.
+                Stator overhang {STATOR_OVERHANG_MM.toFixed(1)} mm each edge: disk Ø{landDiametersMm(setup).diskOuterMm.toFixed(1)} / hole Ø{landDiametersMm(setup).diskInnerMm.toFixed(1)} mm → stator Ø{landDiametersMm(setup).statorOuterMm.toFixed(1)} / hole Ø{landDiametersMm(setup).statorInnerMm.toFixed(1)} mm.
+                Distributor: hollow torus on the feed circle, Ø1 cm bore, 1.5 mm wall, under the stator.
+                The cone is high at the hole and falls {(state.coneRiseM * 1e3).toFixed(1)} mm toward the rim. Each hole is {setup.orificeMm.toFixed(3)} mm diameter, on the midpoint circle under the disk.
+                The air gap is the design hover clearance, drawn {(drawnGap / (gapUm * 1e-3)).toFixed(0)}× its real {gapUm.toFixed(0)} µm so the two parts stay separate. Drag to orbit.
               </p>
+            </Tab>
+            <Tab eventKey="setup" title="Setup">
+              <SetupDiagram setup={setup} orificeMm={setup.orificeMm} sizing={pneumatics} />
             </Tab>
           </Tabs>
         </Col>
