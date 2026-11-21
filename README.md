@@ -1,6 +1,6 @@
 # FV-0
 
-A conical disc that hovers on a thin film of air. The disc is an annulus with a shallow cone, sitting face-down on a stator. Air is fed through small orifices in the stator, leaks out at the hole and at the rim, and lifts the disc until its weight equals the film force. The aim is a disc that floats clear of the stator and stays level, at a gap a printed part can actually hold (typically a few tenths of a millimetre before lapping, and about 50–150 µm after a light lap). It is not a loaded machine bearing: stiffness at a few tens of micrometres is not the design target.
+A conical disc that hovers on air. The disc is an annulus with a shallow cone, sitting face-down on a stator. The flying face is a **deep mid-band pocket** (about 1–2 mm) with **tight sealing lips** at the inner hole and outer rim; orifices feed the pocket, and air leaks only through the lips. Lift equals weight when pocket pressure on the recessed area balances the disc. The lips need a clearance a printed seal can hold after a light lap (about 50–150 µm); the pocket tolerates larger face error. It is not a loaded machine bearing at tens of micrometres over the full face.
 
 The small prototype is about 210 mm across, printed in resin (ELEGOO Saturn 4 12K) with the disc plane vertical so the full annulus fits on the bed. The explorer is a React app on the same stack as Divergy: React 18, TypeScript, Vite, Bootstrap, and Three.js.
 

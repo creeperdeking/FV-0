@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Col, Container, Form, Row, Tab, Tabs } from "react-bootstrap";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AssemblyView from "./components/AssemblyView";
+import BearingSectionDiagram from "./components/BearingSectionDiagram";
 import LineChart from "./components/LineChart";
 import SetupDiagram from "./components/SetupDiagram";
 import {
@@ -53,11 +54,19 @@ function normalizeSetup(raw: Record<string, unknown>): Setup {
     orificeMm,
     gapUm,
     supplyBar,
+    pocketGapMm: pocketRaw,
+    lipInnerMm: lipInRaw,
+    lipOuterMm: lipOutRaw,
+    lateralMarginMm: marginRaw,
     ...rest
   } = raw as Partial<Setup> & {
     orificeMm?: number;
     gapUm?: number;
     supplyBar?: number;
+    pocketGapMm?: number;
+    lipInnerMm?: number;
+    lipOuterMm?: number;
+    lateralMarginMm?: number;
     rpm?: number;
     nozzleAngle?: number;
     eta?: number;
@@ -65,11 +74,25 @@ function normalizeSetup(raw: Record<string, unknown>): Setup {
   const washerRaw = (rest as { washerMm?: unknown }).washerMm;
   const washerMm =
     typeof washerRaw === "number" && Number.isFinite(washerRaw) && washerRaw > 0 ? washerRaw : SMALL_DISK.washerMm;
+  const pocketGapMm =
+    typeof pocketRaw === "number" && Number.isFinite(pocketRaw) && pocketRaw > 0 ? pocketRaw : SMALL_DISK.pocketGapMm;
+  const lipInnerMm =
+    typeof lipInRaw === "number" && Number.isFinite(lipInRaw) && lipInRaw > 0 ? lipInRaw : SMALL_DISK.lipInnerMm;
+  const lipOuterMm =
+    typeof lipOutRaw === "number" && Number.isFinite(lipOutRaw) && lipOutRaw > 0 ? lipOutRaw : SMALL_DISK.lipOuterMm;
+  const lateralMarginMm =
+    typeof marginRaw === "number" && Number.isFinite(marginRaw) && marginRaw >= 0
+      ? marginRaw
+      : SMALL_DISK.lateralMarginMm;
   const base = {
     ...SMALL_DISK,
     ...rest,
     statorMm: 1,
     washerMm,
+    pocketGapMm,
+    lipInnerMm,
+    lipOuterMm,
+    lateralMarginMm,
   };
   const hasGap = typeof gapUm === "number" && gapUm > 0;
   const hasOrifice = typeof orificeMm === "number" && orificeMm > 0;
@@ -345,6 +368,16 @@ const Explorer: React.FC = () => {
     setSetup((current) => {
       const next = { ...current, ...partial };
       if (next.innerMm > next.outerMm - 5) next.innerMm = next.outerMm - 5;
+      // Pocket clearance must stay above the lip gap (positive recess).
+      const lipMm = Math.max(next.gapUm, 1) * 1e-3;
+      if (next.pocketGapMm < lipMm + 0.2) next.pocketGapMm = lipMm + 0.2;
+      const radialMm = (next.outerMm - next.innerMm) / 2;
+      const maxLip = Math.max(1, radialMm * 0.4);
+      next.lipInnerMm = Math.min(next.lipInnerMm, maxLip);
+      next.lipOuterMm = Math.min(next.lipOuterMm, maxLip);
+      const pocketSpanMm = (next.outerMm - next.innerMm) / 2 - next.lipInnerMm - next.lipOuterMm;
+      const maxMargin = Math.max(0, pocketSpanMm / 2 - 1);
+      next.lateralMarginMm = Math.max(0, Math.min(next.lateralMarginMm, maxMargin));
       return next;
     });
   };
@@ -463,8 +496,12 @@ const Explorer: React.FC = () => {
             <Slider label="Disk thickness" min={2} max={25} step={0.5} value={setup.thicknessMm} digits={2} unit="mm" onChange={(thicknessMm) => patch({ thicknessMm })} />
             <Slider label="Density" min={900} max={2700} step={10} value={setup.density} digits={0} unit="kg/m³" onChange={(density) => patch({ density })} />
             <h2 className="h6 control-heading">Air injection</h2>
-            <Slider label="Hover gap" min={10} max={400} step={10} value={setup.gapUm} digits={0} unit="µm" onChange={(gapUm) => patch({ gapUm })} />
-            <Slider label="Orifice diameter" min={0.05} max={5} step={0.01} value={setup.orificeMm} digits={3} unit="mm" onChange={(orificeMm) => patch({ orificeMm })} />
+            <Slider label="Lip gap" min={10} max={400} step={10} value={setup.gapUm} digits={0} unit="µm" onChange={(gapUm) => patch({ gapUm })} />
+            <Slider label="Pocket gap" min={0.5} max={3} step={0.05} value={setup.pocketGapMm} digits={2} unit="mm" onChange={(pocketGapMm) => patch({ pocketGapMm })} />
+            <Slider label="Inner lip width" min={1} max={40} step={0.5} value={setup.lipInnerMm} digits={1} unit="mm" onChange={(lipInnerMm) => patch({ lipInnerMm })} />
+            <Slider label="Outer lip width" min={1} max={40} step={0.5} value={setup.lipOuterMm} digits={1} unit="mm" onChange={(lipOuterMm) => patch({ lipOuterMm })} />
+            <Slider label="Lateral margin" min={0} max={15} step={0.1} value={setup.lateralMarginMm} digits={1} unit="mm" onChange={(lateralMarginMm) => patch({ lateralMarginMm })} />
+            <Slider label="Orifice diameter" min={0.05} max={8} step={0.01} value={setup.orificeMm} digits={3} unit="mm" onChange={(orificeMm) => patch({ orificeMm })} />
             <Slider label="Number of holes" min={3} max={48} step={1} value={setup.nOrifices} digits={0} unit="" onChange={(nOrifices) => patch({ nOrifices })} />
             <Slider label="Feed ring position" min={0.05} max={0.95} step={0.01} value={setup.feedFrac} digits={2} unit="" onChange={(feedFrac) => patch({ feedFrac })} />
             <Slider label="Discharge coefficient" min={0.4} max={0.9} step={0.05} value={setup.cd} digits={2} unit="" onChange={(cd) => patch({ cd })} />
@@ -492,14 +529,15 @@ const Explorer: React.FC = () => {
                 <Col md={3}><Metric label="Radial stiffness" value={`${(state.radialStiffness * 1e-6).toFixed(3)} N/µm`} /></Col>
                 <Col md={3}><Metric label="Air use" value={`${state.volumeFlowNlpm.toFixed(1)} NL/min`} /></Col>
                 <Col md={3}><Metric label="Pocket gauge" value={pocketGauge(state.pocketPressurePa)} /></Col>
+                <Col md={3}><Metric label="Lip / pocket gap" value={`${(state.gapM * 1e6).toFixed(0)} µm / ${(state.pocketGapM * 1e3).toFixed(2)} mm`} /></Col>
               </Row>
               <Row className="g-4">
                 <Col xl={6}>
                   <div className="border rounded p-3 bg-white">
                     <LineChart
-                      title="Lift versus gap"
+                      title="Lift versus lip gap"
                       x={sweep.gapUm}
-                      xLabel="Gap"
+                      xLabel="Lip gap"
                       xUnit="µm"
                       yUnit="N"
                       yLog
@@ -511,18 +549,8 @@ const Explorer: React.FC = () => {
                   </div>
                 </Col>
                 <Col xl={6}>
-                  <div className="border rounded p-3 bg-white">
-                    <LineChart
-                      title="Stiffness and air use"
-                      x={sweep.gapUm}
-                      xLabel="Gap"
-                      xUnit="µm"
-                      yUnit="N/µm · NL/min"
-                      series={[
-                        { name: "Stiffness (N/µm)", color: "#1f6f8b", values: sweep.stiffnessPerUm },
-                        { name: "Air use (NL/min)", color: "#6b8f71", values: sweep.flowNlpm },
-                      ]}
-                    />
+                  <div className="border rounded p-3 bg-white h-100">
+                    <BearingSectionDiagram setup={setup} />
                   </div>
                 </Col>
               </Row>
@@ -540,7 +568,7 @@ const Explorer: React.FC = () => {
                   }
                   series={[{ name: pressure.seriesName, color: "#1f6f8b", values: pressure.values }]}
                 />
-                <p className="small text-secondary mb-0">Feed ring at {(state.feedRadiusM * 1e3).toFixed(1)} mm. Pressure peaks at the holes and falls to atmosphere at both edges.</p>
+                <p className="small text-secondary mb-0">Feed ring at {(state.feedRadiusM * 1e3).toFixed(1)} mm. Pocket pressure is nearly flat between the lips, then falls to atmosphere across each sealing land.</p>
               </div>
               <div className="border rounded p-3 bg-white mt-4">
                 <h2 className="h6">Geometry</h2>
@@ -592,7 +620,7 @@ const Explorer: React.FC = () => {
                 Cone angle and wall height are true: the disk walls rise {setup.thicknessMm.toFixed(2)} mm above the local cone. The stator and distributor are one fused print: a {STATOR_SKIN_MM.toFixed(0)} mm plate with {STATOR_WALL_DEPTH_MM.toFixed(0)} mm underside ribs ({statorRibCount(setup.nOrifices)}, midway between every two orifices) that merge into the hollow torus ({STATOR_ABOVE_TORUS_MM.toFixed(0)} mm below the plate, {STATOR_TORUS_INDENT_MM.toFixed(0)} mm rib indent). Continuous orifice cones at {distributorConeAngleDeg(setup.orificeMm).toFixed(1)}° open flush on the flying face; {(distributorInletLenMm(setup) / 10).toFixed(1)} cm −Y inlet ends flush with the stator rim.
                 Stator overhang {STATOR_OVERHANG_MM.toFixed(1)} mm each edge: disk Ø{landDiametersMm(setup).diskOuterMm.toFixed(1)} / hole Ø{landDiametersMm(setup).diskInnerMm.toFixed(1)} mm → stator Ø{landDiametersMm(setup).statorOuterMm.toFixed(1)} / hole Ø{landDiametersMm(setup).statorInnerMm.toFixed(1)} mm.
                 The cone is low at the hole and rises {(state.coneRiseM * 1e3).toFixed(1)} mm toward the rim. Each hole is {setup.orificeMm.toFixed(3)} mm diameter, on the midpoint circle under the disk.
-                The air gap is the design hover clearance, drawn {(drawnGap / (gapUm * 1e-3)).toFixed(0)}× its real {gapUm.toFixed(0)} µm so the two parts stay separate. Drag to orbit.
+                Simulation uses flat lips with a conical pocket ({setup.pocketGapMm.toFixed(2)} mm) and a {setup.lateralMarginMm.toFixed(1)} mm lateral margin as a same-direction shift of the rotor breaks toward the ID (seal {(state.sealInnerM * 1e3).toFixed(1)} / {(state.sealOuterM * 1e3).toFixed(1)} mm at {gapUm.toFixed(0)} µm). The CAD preview still draws a continuous face; only the lip gap is exaggerated ({(drawnGap / (gapUm * 1e-3)).toFixed(0)}×) so the parts stay separate. Drag to orbit.
               </p>
             </Tab>
             <Tab eventKey="setup" title="Setup">

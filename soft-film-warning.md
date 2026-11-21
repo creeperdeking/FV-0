@@ -1,23 +1,25 @@
-# Hover clearance warning
+# Lip clearance warning
 
-This project is a **hovering disc**, not a loaded aerostatic bearing. The Simulation tab warns when the chosen flying height is so small that printed faces will rub. The check lives in `src/physics.ts` (`HOVER_RUB_GAP_M` and the `evaluateAt` note). Change this file in the same commit as any change to that logic.
+This project is a **hovering disc** with a **deep mid-band pocket** and **tight sealing lips**, not a loaded machine bearing with a continuous thin film. The Simulation tab warns when the chosen *lip* flying height is so small that printed seal rings will rub. The check lives in `src/physics.ts` (`HOVER_RUB_GAP_M` and the `evaluateAt` note). Change this file in the same commit as any change to that logic.
 
-## What was removed
+## Geometry the warning cares about
 
-A previous banner treated the film as too soft when a 10% weight step moved the gap by more than 5 µm. Under orifice sizing that is about \(h/30\), so it fired above ~150 µm and pointed at a 5–30 µm loaded-bearing gap.
+- **Lip gap** `gapUm`: clearance on the inner and outer sealing lands. This is what must stay open everywhere on those rings.
+- **Pocket gap** `pocketGapMm`: recessed mid-band clearance at the design lip gap (typically 1–2 mm). Macroscopic warp in the pocket floor is tolerated because the recess is large.
+- **Recess** = pocket gap − lip gap (fixed in the part). When the disc rises, both gaps increase together.
 
-That is the wrong success test here. A soft film at a few hundred micrometres is a normal hover: the disc may move when pushed, and it can still float clear and stay level. Stiffness, natural frequency, and “how much load it can carry” are not design limits.
+The deep pocket does **not** protect the lips. A proud seam or bump on a lip ring still rubs if it exceeds the lip gap.
 
 ## What still matters
 
-The disc hovers only while every local gap stays open. Print warp, layer steps, and seams on a ~210 mm resin cone are often **0.1–0.3 mm** before any lap, and still on the order of **50 µm** after a light lap. Below that, high spots touch, friction kills the float, and the cone cannot sit on the film.
+Print warp, layer steps, and seams on resin lips are often **0.1–0.3 mm** before any lap, and still on the order of **50 µm** after a light lap of the seal rings. Below that, high spots on the lips touch, friction kills the float, and the pocket vents.
 
 Warn when
 
 \[
-h < 50\,\mu\mathrm{m}
+h_\mathrm{lip} < 50\,\mu\mathrm{m}
 \]
 
-(`HOVER_RUB_GAP_M`). The banner states the chosen gap and that threshold. Gaps from about 50 µm up through several hundred micrometres stay quiet on purpose, including a squishy 300 µm hover.
+(`HOVER_RUB_GAP_M`). Gaps from about 50 µm up through a few hundred micrometres on the lips stay quiet on purpose.
 
-The 10 µm “printed face” note is folded into this check. Mean-free-path, orifice-curtain, and hole-spacing warnings stay: they are about the model, feeding, and keeping the disc level, not about bearing stiffness.
+Mean-free-path, orifice-curtain (vs **pocket** height), lip-width, recess-depth, and hole-spacing warnings stay: they are about the model and feeding, not about loaded-bearing stiffness.
