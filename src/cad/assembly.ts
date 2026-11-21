@@ -45,11 +45,38 @@ export const DISTRIBUTOR_BORE_MM = 10;
 /** Distributor torus: wall thickness around the bore (mm). */
 export const DISTRIBUTOR_WALL_MM = 1;
 
-/** Horizontal inlet stub on the torus −Y side (mm, outside the outer wall). */
-export const DISTRIBUTOR_INLET_LEN_MM = 50;
-
 /** Bump when solid-building logic changes so the viewer can force a rebuild after HMR. */
-export const CAD_GEOMETRY_REV = 30;
+export const CAD_GEOMETRY_REV = 40;
+
+/** Target polygonal form error for print STL export (mm). */
+export const STL_FORM_ERROR_MM = 0.01;
+
+/**
+ * Azimuthal segments so an N-gon of radius `radiusMm` stays within `maxErrorMm`
+ * of a true circle: δ ≈ R (1 − cos(π/N)).
+ */
+export function segmentsForRadiusMm(radiusMm: number, maxErrorMm = STL_FORM_ERROR_MM): number {
+  const R = Math.max(radiusMm, 0.5);
+  const err = Math.max(maxErrorMm, 1e-6);
+  const n = Math.ceil(Math.PI * Math.sqrt(R / (2 * err)));
+  return Math.min(2048, Math.max(48, n));
+}
+
+/** Viewer / non-contact body resolution (ribs, torus, cones, inlet). */
+export function previewSegmentsForSetup(setup: Setup): number {
+  return Math.min(40, Math.max(24, Math.round(24 + setup.nOrifices / 2)));
+}
+
+/** High-res count for the disk↔stator conical contact faces only. */
+export function exportFaceSegmentsForSetup(setup: Setup): number {
+  const rStator = setup.outerMm / 2 + STATOR_OVERHANG_MM;
+  return segmentsForRadiusMm(rStator);
+}
+
+/** @deprecated Use exportFaceSegmentsForSetup — kept for UI labels. */
+export function exportSegmentsForSetup(setup: Setup): number {
+  return exportFaceSegmentsForSetup(setup);
+}
 
 /**
  * Plan angle of orifice `i` of `n` (radians, CCW from +X).
@@ -59,6 +86,25 @@ export const CAD_GEOMETRY_REV = 30;
 export function orificeTheta(i: number, n: number): number {
   const count = Math.max(n, 1);
   return ((i + 0.5) / count) * Math.PI * 2 - Math.PI / 2;
+}
+
+/** One stator rib per two orifices (minimum 2). */
+export function statorRibCount(nOrifices: number): number {
+  return Math.max(2, Math.floor(Math.max(nOrifices, 1) / 2));
+}
+
+/**
+ * Plan angle of stator rib `j`: midway between orifice `2j` and `2j+1`
+ * (centred in every other inter-orifice gap).
+ */
+export function statorRibTheta(j: number, nOrifices: number): number {
+  const n = Math.max(nOrifices, 1);
+  const a = orificeTheta((2 * j) % n, n);
+  const b = orificeTheta((2 * j + 1) % n, n);
+  // Average on the circle (handles wrap when n is odd).
+  let mid = (a + b) / 2;
+  if (Math.abs(b - a) > Math.PI) mid += Math.PI;
+  return mid;
 }
 
 export type DistributorConeLayout = {
@@ -116,6 +162,21 @@ export function distributorConeLayout(tubeOuterR: number, outerTipR: number): Di
 /** Tip height from tube centre to the orifice face for the stator/torus stack. */
 export function distributorTipHeightMm(): number {
   return STATOR_SKIN_MM + STATOR_ABOVE_TORUS_MM + DISTRIBUTOR_BORE_MM / 2 + DISTRIBUTOR_WALL_MM;
+}
+
+/**
+ * Inlet length outside the torus wall so the −Y tip is flush with the stator
+ * outer rim: stubR + tubeOuterR + inletLen = rStatorOut.
+ */
+export function distributorInletLenMm(setup: Setup): number {
+  const rInner = setup.innerMm / 2;
+  const rOuter = setup.outerMm / 2;
+  const feed = rInner + setup.feedFrac * (rOuter - rInner);
+  const tubeOuterR = DISTRIBUTOR_BORE_MM / 2 + DISTRIBUTOR_WALL_MM;
+  const stubR = Math.max(tubeOuterR + 0.5, feed);
+  const rStatorOut = rOuter + STATOR_OVERHANG_MM;
+  // yCrest = -(stubR + tubeOuterR); tip at yCrest - inletLen = -rStatorOut
+  return Math.max(0.5, rStatorOut - stubR - tubeOuterR);
 }
 
 type DistributorConeFit = {
@@ -211,8 +272,8 @@ export function landDiametersMm(setup: Setup): {
 
 export type AssemblySolids = {
   disk: Geom3;
+  /** Fused stator plate, underside ribs, and distributor plenum. */
   stator: Geom3;
-  distributor: Geom3;
 };
 
 export type AssemblyParams = {
@@ -322,7 +383,13 @@ function aimedCylinder(radius: number, length: number, origin: [number, number, 
  * plus a circumferential washer stop so added washers cannot slide inward down the cone.
  * `setup.thicknessMm` is the overall wall height above the flying face.
  */
-async function buildLeanDisk(setup: Setup, gapMm: number, washerMm: number, segments: number): Promise<Geom3> {
+async function buildLeanDisk(
+  setup: Setup,
+  gapMm: number,
+  washerMm: number,
+  bodySegments: number,
+  faceSegments = bodySegments,
+): Promise<Geom3> {
   const skin = DISK_SKIN_MM;
   const rInner = setup.innerMm / 2;
   const rOuter = setup.outerMm / 2;
@@ -331,8 +398,8 @@ async function buildLeanDisk(setup: Setup, gapMm: number, washerMm: number, segm
   // Ceiling is the same cone, lifted by the wall height — not a flat lid.
   const crown = (radius: number) => face(radius) + wallH;
 
-  // Continuous conical floor (1 mm vertical thickness).
-  const floor = revolve(ringProfile(rInner, rOuter, face(rInner) + skin, face(rOuter) + skin, skin), segments);
+  // Flying-face floor at `faceSegments`; ribs/rim stay at preview `bodySegments`.
+  const floor = revolve(ringProfile(rInner, rOuter, face(rInner) + skin, face(rOuter) + skin, skin), faceSegments);
 
   // Outer rim wall, inset from the floor OD.
   const rRim = Math.max(rInner + 3 * skin, rOuter - OUTER_RIM_INSET_MM);
@@ -345,7 +412,7 @@ async function buildLeanDisk(setup: Setup, gapMm: number, washerMm: number, segm
         [rRim - skin, crown(rRim - skin)],
       ],
     }),
-    segments,
+    bodySegments,
   );
 
   // Washer pocket: centered on the mid-land. Circumferential wall at the washer ID
@@ -363,7 +430,7 @@ async function buildLeanDisk(setup: Setup, gapMm: number, washerMm: number, segm
         [rWasherIn - skin, crown(rWasherIn - skin)],
       ],
     }),
-    segments,
+    bodySegments,
   );
 
   let disk = booleans.union(floor, outerRim, retainer);
@@ -413,9 +480,12 @@ async function addMirroredStatorWalls(
   const statorMm = STATOR_SKIN_MM;
   const rInner = setup.innerMm / 2;
   const rOuter = setup.outerMm / 2;
-  // Underside of the plate and the free edge of the hanging walls (both follow the cone).
+  // Underside of the plate; free edge of the hanging walls (both follow the cone).
+  // Wall tops use `face` (not underside) so they bury into the plate skin and
+  // CSG-union cleanly — coplanar under-only contact left a visible gap.
   const under = (radius: number) => face(radius) - statorMm;
   const heel = (radius: number) => under(radius) - wallH;
+  const top = (radius: number) => face(radius);
 
   const rRim = Math.max(rInner + 3 * skin, rOuter - OUTER_RIM_INSET_MM);
   const outerRim = revolve(
@@ -423,8 +493,8 @@ async function addMirroredStatorWalls(
       points: [
         [rRim - skin, heel(rRim - skin)],
         [rRim, heel(rRim)],
-        [rRim, under(rRim)],
-        [rRim - skin, under(rRim - skin)],
+        [rRim, top(rRim)],
+        [rRim - skin, top(rRim - skin)],
       ],
     }),
     segments,
@@ -439,8 +509,8 @@ async function addMirroredStatorWalls(
       points: [
         [rWasherIn - skin, heel(rWasherIn - skin)],
         [rWasherIn, heel(rWasherIn)],
-        [rWasherIn, under(rWasherIn)],
-        [rWasherIn - skin, under(rWasherIn - skin)],
+        [rWasherIn, top(rWasherIn)],
+        [rWasherIn - skin, top(rWasherIn - skin)],
       ],
     }),
     segments,
@@ -449,157 +519,76 @@ async function addMirroredStatorWalls(
   let stator = booleans.union(plate, outerRim, retainer);
   await yieldToUi();
 
-  const ribs = washerBayCount(setup, washerD);
+  // Ribs sit midway between every two orifices (not the disk washer-bay count).
+  const ribs = statorRibCount(setup.nOrifices);
   const rRib0 = args.rStatorIn;
   const rRib1 = args.rStatorOut;
-  for (let i = 0; i < ribs; i += 1) {
-    const theta = (i / ribs) * Math.PI * 2;
+  for (let j = 0; j < ribs; j += 1) {
+    const theta = statorRibTheta(j, setup.nOrifices);
     const web = primitives.polygon({
       points: [
         [rRib0, heel(rRib0)],
         [rRib1, heel(rRib1)],
-        [rRib1, under(rRib1)],
-        [rRib0, under(rRib0)],
+        [rRib1, top(rRib1)],
+        [rRib0, top(rRib0)],
       ],
     });
     const slab = extrusions.extrudeLinear({ height: skin }, web);
     const upright = transforms.rotateX(Math.PI / 2, slab);
     const centered = transforms.translate([0, skin / 2, 0], upright);
     stator = booleans.union(stator, transforms.rotateZ(theta, centered));
-    if (i % 2 === 1) await yieldToUi();
+    if (j % 2 === 1) await yieldToUi();
   }
 
   return stator;
 }
 
 /**
- * Conical stator plate with 8 mm mirrored underside walls. The plate sits
- * `STATOR_ABOVE_TORUS_MM` above the torus crown so the walls indent
- * `STATOR_TORUS_INDENT_MM` into the tube.
+ * Fused stator + distributor: plate, underside ribs, hollow torus, and one
+ * continuous orifice cone per hole. Ribs union into the torus (no clearance
+ * groove); conical contacts are a single wall, not a male/female pair.
  */
-async function buildStator(args: {
+async function buildFusedStator(args: {
   setup: Setup;
   orificeMm: number;
   washerMm: number;
-  segments: number;
+  bodySegments: number;
+  faceSegments?: number;
 }): Promise<Geom3> {
-  const { setup, orificeMm, washerMm, segments } = args;
+  const { setup, orificeMm, washerMm, bodySegments } = args;
+  const faceSegments = args.faceSegments ?? bodySegments;
   const rInner = setup.innerMm / 2;
   const rOuter = setup.outerMm / 2;
   const alpha = (setup.angleDeg * Math.PI) / 180;
   const statorMm = STATOR_SKIN_MM;
   const feed = rInner + setup.feedFrac * (rOuter - rInner);
   const face = (radius: number) => coneZ(radius, rInner, alpha);
-  const coneFit = distributorConeFit(orificeMm);
-  const stubR = Math.max(coneFit.tubeOuterR + 0.5, feed);
+  const { boreR, tubeOuterR, holeR, outerTipR, tanHalf, layout, zTubeCenterFromFace } = distributorConeFit(orificeMm);
+  const stubR = Math.max(tubeOuterR + 0.5, feed);
   const zRef = face(feed);
-  const zUnder = zRef - statorMm;
-  const zTubeCenter = zRef - coneFit.zTubeCenterFromFace;
+  const zTubeCenter = zRef - zTubeCenterFromFace;
   const wallH = STATOR_WALL_DEPTH_MM;
 
   const overhang = STATOR_OVERHANG_MM;
   const rStatorIn = Math.max(0.05, rInner - overhang);
   const rStatorOut = rOuter + overhang;
-  const plate = revolve(ringProfile(rStatorIn, rStatorOut, face(rStatorIn), face(rStatorOut), statorMm), segments);
+  // Contact face at `faceSegments`; everything else stays at preview `bodySegments`.
+  const plate = revolve(ringProfile(rStatorIn, rStatorOut, face(rStatorIn), face(rStatorOut), statorMm), faceSegments);
 
-  let stator = await addMirroredStatorWalls(plate, {
+  // Plate + ribs/rim/retainer — no torus clearance cut; union will merge into the tube.
+  let body = await addMirroredStatorWalls(plate, {
     setup,
     rStatorIn,
     rStatorOut,
     face,
     wallH,
     washerMm,
-    segments,
+    segments: bodySegments,
   });
 
-  // Circular grooves through the ribs where they indent into the torus.
-  const grooveClear = 0.35;
-  const tubeSegs = Math.max(12, Math.min(24, Math.round(segments / 2)));
-  const ringSegs = Math.max(24, Math.min(48, segments));
-  const groove = transforms.translate(
-    [0, 0, zTubeCenter],
-    primitives.torus({
-      innerRadius: coneFit.tubeOuterR + grooveClear,
-      outerRadius: stubR,
-      innerSegments: tubeSegs,
-      outerSegments: ringSegs,
-    }),
-  );
-  stator = booleans.subtract(stator, groove);
-  await yieldToUi();
-
-  // Vertical slots from the plate down to the tube so the stubs pass through the ribs.
-  const slotClear = coneFit.outerTipR + 0.4;
-  const slot = revolve(
-    primitives.polygon({
-      points: [
-        [stubR - slotClear, zTubeCenter],
-        [stubR + slotClear, zTubeCenter],
-        [stubR + slotClear, zUnder + 0.05],
-        [stubR - slotClear, zUnder + 0.05],
-      ],
-    }),
-    segments,
-  );
-  stator = booleans.subtract(stator, slot);
-  await yieldToUi();
-
-  // Conical seats: same steep taper as the distributor stubs, tip on the flying face.
-  const marginOuter = coneTrimMargin(coneFit.outerTipR, alpha, coneFit.tanHalf);
-  const zHole0 = zRef - coneFit.layout.coneHeight - 0.5;
-  const zHole1 = zRef + marginOuter + 0.3;
-  const rHole0 = coneRadiusAt(coneFit.outerTipR, zRef, zHole0, coneFit.tanHalf);
-  const rHole1 = Math.max(0.02, coneRadiusAt(coneFit.outerTipR, zRef, zHole1, coneFit.tanHalf));
-  const coneSegs = Math.max(8, Math.min(16, Math.round(segments / 3)));
-  const cutters: Geom3[] = [];
-  for (let i = 0; i < setup.nOrifices; i += 1) {
-    const theta = orificeTheta(i, setup.nOrifices);
-    cutters.push(
-      verticalFrustum(stubR * Math.cos(theta), stubR * Math.sin(theta), zHole0, zHole1, rHole0, rHole1, coneSegs),
-    );
-  }
-  if (cutters.length > 0) {
-    const batch = 4;
-    for (let i = 0; i < cutters.length; i += batch) {
-      stator = booleans.subtract(stator, ...cutters.slice(i, i + batch));
-      await yieldToUi();
-    }
-  }
-
-  return stator;
-}
-
-/**
- * Hollow torus plenum with steep vertical stubs. Orifice exits stay on the stator
- * flying face; the torus sits `STATOR_ABOVE_TORUS_MM` below the plate underside
- * so the 8 mm walls indent `STATOR_TORUS_INDENT_MM` into the tube.
- */
-async function buildDistributor(args: {
-  feed: number;
-  faceAtFeed: number;
-  rInner: number;
-  rOuter: number;
-  alpha: number;
-  nOrifices: number;
-  orificeMm: number;
-  segments: number;
-}): Promise<Geom3> {
-  const { feed, faceAtFeed, rInner, rOuter, alpha, nOrifices, orificeMm, segments } = args;
-  const { boreR, tubeOuterR, holeR, outerTipR, tanHalf, layout, zTubeCenterFromFace } = distributorConeFit(orificeMm);
-
-  const stubR = Math.max(tubeOuterR + 0.5, feed);
-  const zRef = faceAtFeed;
-  const zTubeCenter = zRef - zTubeCenterFromFace;
-  // Continuous steep taper from the tube up to the orifice face (no cylindrical neck).
-  const coneLen = layout.coneHeight + Math.min(0.25, DISTRIBUTOR_WALL_MM * 0.2);
-  const marginOuter = coneTrimMargin(outerTipR, alpha, tanHalf);
-  const marginInner = coneTrimMargin(holeR, alpha, tanHalf);
-  const zConeTop = zRef + marginOuter;
-  const zConeBot = zRef - coneLen;
-
+  const ringSegs = Math.max(24, bodySegments);
+  const tubeSegs = Math.max(12, Math.min(24, Math.round(bodySegments / 2)));
   const majorR = stubR;
-  const ringSegs = Math.max(24, Math.min(48, segments));
-  const tubeSegs = Math.max(12, Math.min(24, Math.round(segments / 2)));
   const outer = primitives.torus({
     innerRadius: tubeOuterR,
     outerRadius: majorR,
@@ -613,57 +602,58 @@ async function buildDistributor(args: {
     outerSegments: ringSegs,
   });
   const boreCut = transforms.translate([0, 0, zTubeCenter], bore);
-  let body = transforms.translate([0, 0, zTubeCenter], booleans.subtract(outer, bore));
+  const plenum = transforms.translate([0, 0, zTubeCenter], booleans.subtract(outer, bore));
+  // Ribs indent into the torus and become one solid with it.
+  body = booleans.union(body, plenum);
   await yieldToUi();
 
-  const coneSegs = Math.max(8, Math.min(16, Math.round(segments / 3)));
+  const coneLen = layout.coneHeight + Math.min(0.25, DISTRIBUTOR_WALL_MM * 0.2);
+  const marginOuter = coneTrimMargin(outerTipR, alpha, tanHalf);
+  const marginInner = coneTrimMargin(holeR, alpha, tanHalf);
+  const zConeTop = zRef + marginOuter;
+  const zConeBot = zRef - coneLen;
   const rConeBot = coneRadiusAt(outerTipR, zRef, zConeBot, tanHalf);
   const rConeTop = coneRadiusAt(outerTipR, zRef, zConeTop, tanHalf);
+  const coneSegs = Math.max(8, Math.min(16, Math.round(bodySegments / 3)));
   const rAirBot = Math.min(coneRadiusAt(holeR, zRef, zTubeCenter, tanHalf), boreR * 0.85);
   const rAirTop = coneRadiusAt(holeR, zRef, zRef + marginInner, tanHalf);
-  for (let i = 0; i < Math.max(nOrifices, 0); i += 1) {
-    const theta = orificeTheta(i, nOrifices);
+
+  for (let i = 0; i < Math.max(setup.nOrifices, 0); i += 1) {
+    const theta = orificeTheta(i, setup.nOrifices);
     const x = stubR * Math.cos(theta);
     const y = stubR * Math.sin(theta);
-
+    // One common cone wall from the tube through the plate (no separate seat sleeve).
     const frustum = verticalFrustum(x, y, zConeBot, zConeTop, rConeBot, rConeTop, coneSegs);
     body = booleans.union(body, booleans.subtract(frustum, boreCut));
-
     const airway = verticalFrustum(x, y, zTubeCenter, zRef + marginInner, rAirBot, Math.max(rAirTop, holeR), coneSegs);
     body = booleans.subtract(body, airway);
     await yieldToUi();
   }
 
-  // Horizontal inlet on −Y, same OD/ID as the torus tube.
+  const inletLen = distributorInletLenMm(setup);
   const inletDir: [number, number, number] = [0, -1, 0];
   const yCenter = -majorR;
   const yCrest = -(majorR + tubeOuterR);
-  const yFree = yCrest - DISTRIBUTOR_INLET_LEN_MM;
+  const yFree = yCrest - inletLen;
   const ySolidStop = yCenter + 0.2;
-  const solidLen = ySolidStop - yFree;
   const inletShell = aimedCylinder(
     tubeOuterR,
-    solidLen,
+    ySolidStop - yFree,
     [0, (yFree + ySolidStop) / 2, zTubeCenter],
     inletDir,
     tubeSegs,
   );
   body = booleans.union(body, booleans.subtract(inletShell, boreCut));
-
   const yBoreStop = yCenter + Math.min(0.8, boreR * 0.3);
   const yBoreFree = yFree - 0.5;
-  const inletBore = aimedCylinder(
-    boreR,
-    yBoreStop - yBoreFree,
-    [0, (yBoreFree + yBoreStop) / 2, zTubeCenter],
-    inletDir,
-    tubeSegs,
+  body = booleans.subtract(
+    body,
+    aimedCylinder(boreR, yBoreStop - yBoreFree, [0, (yBoreFree + yBoreStop) / 2, zTubeCenter], inletDir, tubeSegs),
   );
-  body = booleans.subtract(body, inletBore);
   await yieldToUi();
 
-  const rCap = rOuter + STATOR_OVERHANG_MM + DISTRIBUTOR_INLET_LEN_MM + tubeOuterR + 10;
-  body = booleans.subtract(body, aboveStatorFace(rInner, alpha, rCap, segments));
+  const rCap = rOuter + STATOR_OVERHANG_MM + inletLen + tubeOuterR + 10;
+  body = booleans.subtract(body, aboveStatorFace(rInner, alpha, rCap, bodySegments));
   await yieldToUi();
 
   return body;
@@ -671,32 +661,35 @@ async function buildDistributor(args: {
 
 export async function buildAssembly(params: AssemblyParams): Promise<AssemblySolids> {
   const { setup, orificeMm, washerMm } = params;
-  const segments = params.segments ?? 48;
-  const rInner = setup.innerMm / 2;
-  const rOuter = setup.outerMm / 2;
-  const alpha = (setup.angleDeg * Math.PI) / 180;
+  const segments = params.segments ?? previewSegmentsForSetup(setup);
   const gap = params.gapMm;
-  const feed = rInner + setup.feedFrac * (rOuter - rInner);
-  const face = (radius: number) => coneZ(radius, rInner, alpha);
 
   const disk = await buildLeanDisk(setup, gap, washerMm, segments);
   await yieldToUi();
 
-  const stator = await buildStator({ setup, orificeMm, washerMm, segments });
-  await yieldToUi();
+  const stator = await buildFusedStator({ setup, orificeMm, washerMm, bodySegments: segments });
 
-  const distributor = await buildDistributor({
-    feed,
-    faceAtFeed: face(feed),
-    rInner,
-    rOuter,
-    alpha,
-    nOrifices: setup.nOrifices,
-    orificeMm,
-    segments,
+  return { disk, stator };
+}
+
+/** STL disk: high-res contact floor only; ribs/rim at preview resolution. */
+export async function buildDiskForExport(params: Omit<AssemblyParams, "gapMm" | "segments"> & { faceSegments?: number; bodySegments?: number }): Promise<Geom3> {
+  const bodySegments = params.bodySegments ?? previewSegmentsForSetup(params.setup);
+  const faceSegments = params.faceSegments ?? exportFaceSegmentsForSetup(params.setup);
+  return buildLeanDisk(params.setup, 0, params.washerMm, bodySegments, faceSegments);
+}
+
+/** STL stator: high-res contact plate only; ribs/torus/cones at preview resolution. */
+export async function buildStatorForExport(params: Omit<AssemblyParams, "gapMm" | "segments"> & { faceSegments?: number; bodySegments?: number }): Promise<Geom3> {
+  const bodySegments = params.bodySegments ?? previewSegmentsForSetup(params.setup);
+  const faceSegments = params.faceSegments ?? exportFaceSegmentsForSetup(params.setup);
+  return buildFusedStator({
+    setup: params.setup,
+    orificeMm: params.orificeMm,
+    washerMm: params.washerMm,
+    bodySegments,
+    faceSegments,
   });
-
-  return { disk, stator, distributor };
 }
 
 export function assemblyExtents(setup: Setup): { rOuter: number; feed: number; faceAtFeed: number } {

@@ -6,12 +6,14 @@ import LineChart from "./components/LineChart";
 import SetupDiagram from "./components/SetupDiagram";
 import {
   distributorConeAngleDeg,
+  distributorInletLenMm,
   landDiametersMm,
   STATOR_ABOVE_TORUS_MM,
   STATOR_OVERHANG_MM,
   STATOR_SKIN_MM,
   STATOR_TORUS_INDENT_MM,
   STATOR_WALL_DEPTH_MM,
+  statorRibCount,
   washerBayCount,
 } from "./cad/assembly";
 import {
@@ -587,9 +589,8 @@ const Explorer: React.FC = () => {
               </div>
               <p className="small text-secondary mt-2 mb-0">
                 Lean disk with 1 mm skins, outer rim wall inset 1 cm from the OD, open inner hole (no inner rim), {washerBayCount(setup, setup.washerMm)} radial walls sized so {(setup.washerMm / 10).toFixed(1)} cm washers fit between two ribs and the retainer ring.
-                Cone angle and wall height are true: the disk walls rise {setup.thicknessMm.toFixed(2)} mm above the local cone and the stator is a {STATOR_SKIN_MM.toFixed(0)} mm plate with {STATOR_WALL_DEPTH_MM.toFixed(0)} mm mirrored underside ribs/rim/retainer. The plate sits {STATOR_ABOVE_TORUS_MM.toFixed(0)} mm above the torus crown (walls indent {STATOR_TORUS_INDENT_MM.toFixed(0)} mm). Distributor cones seat in matching holes; orifices stay flush with the flying face.
+                Cone angle and wall height are true: the disk walls rise {setup.thicknessMm.toFixed(2)} mm above the local cone. The stator and distributor are one fused print: a {STATOR_SKIN_MM.toFixed(0)} mm plate with {STATOR_WALL_DEPTH_MM.toFixed(0)} mm underside ribs ({statorRibCount(setup.nOrifices)}, midway between every two orifices) that merge into the hollow torus ({STATOR_ABOVE_TORUS_MM.toFixed(0)} mm below the plate, {STATOR_TORUS_INDENT_MM.toFixed(0)} mm rib indent). Continuous orifice cones at {distributorConeAngleDeg(setup.orificeMm).toFixed(1)}° open flush on the flying face; {(distributorInletLenMm(setup) / 10).toFixed(1)} cm −Y inlet ends flush with the stator rim.
                 Stator overhang {STATOR_OVERHANG_MM.toFixed(1)} mm each edge: disk Ø{landDiametersMm(setup).diskOuterMm.toFixed(1)} / hole Ø{landDiametersMm(setup).diskInnerMm.toFixed(1)} mm → stator Ø{landDiametersMm(setup).statorOuterMm.toFixed(1)} / hole Ø{landDiametersMm(setup).statorInnerMm.toFixed(1)} mm.
-                Distributor: hollow torus with steep orifice cones at {distributorConeAngleDeg(setup.orificeMm).toFixed(1)}° (tangent to the tube), Ø1 cm bore, 1 mm wall; 5 cm horizontal inlet on the −Y side (between holes).
                 The cone is low at the hole and rises {(state.coneRiseM * 1e3).toFixed(1)} mm toward the rim. Each hole is {setup.orificeMm.toFixed(3)} mm diameter, on the midpoint circle under the disk.
                 The air gap is the design hover clearance, drawn {(drawnGap / (gapUm * 1e-3)).toFixed(0)}× its real {gapUm.toFixed(0)} µm so the two parts stay separate. Drag to orbit.
               </p>

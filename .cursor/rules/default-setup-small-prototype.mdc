@@ -1,0 +1,13 @@
+---
+description: Default model/dimensions questions to the Small prototype save
+alwaysApply: true
+---
+
+# Default setup for dimension questions
+
+When the user asks about dimensions, geometry, clearances, orifices, gaps, flow, mass, or anything “on the model” / CAD / physics:
+
+- **Default setup**: the saved reactor in `save/setups.json` named **`Small prototype`** (also referred to as “small reactor” / “small prototype”).
+- Load that entry and answer from those parameters unless they name another save or give explicit overrides.
+- Do not silently use in-code defaults (`SMALL_DISK`, UI draft state, or another preset) when a save-based answer is intended.
+- If the save is missing or renamed, say so and ask which setup to use — do not invent parameters.

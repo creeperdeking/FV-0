@@ -2,23 +2,29 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Form } from "react-bootstrap";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { assemblyExtents, CAD_GEOMETRY_REV, getCachedAssembly } from "../cad/assembly";
+import {
+  assemblyExtents,
+  CAD_GEOMETRY_REV,
+  exportFaceSegmentsForSetup,
+  getCachedAssembly,
+  previewSegmentsForSetup,
+  STL_FORM_ERROR_MM,
+} from "../cad/assembly";
 import { meshFromGeom3 } from "../cad/jscadToThree";
+import { exportPartStl, type StlPart } from "../cad/stlExport";
 import type { Setup } from "../physics";
 
-const PART_KEYS = ["disk", "stator", "distributor"] as const;
+const PART_KEYS = ["disk", "stator"] as const;
 type PartKey = (typeof PART_KEYS)[number];
 
 const PART_LABELS: Record<PartKey, string> = {
   disk: "Disk",
-  stator: "Stator",
-  distributor: "Distributor",
+  stator: "Stator + distributor",
 };
 
 const DEFAULT_VISIBLE: Record<PartKey, boolean> = {
   disk: true,
   stator: true,
-  distributor: true,
 };
 
 const PART_VISIBILITY_KEY = "fv0-cad-parts-visible";
@@ -221,8 +227,12 @@ const AssemblyView: React.FC<Props> = ({ setup, gapUm, orificeMm, washerMm }) =>
   const [builtSig, setBuiltSig] = useState(pendingSig);
   const [builtRev, setBuiltRev] = useState(CAD_GEOMETRY_REV);
   const [building, setBuilding] = useState(true);
+  const [exporting, setExporting] = useState<StlPart | null>(null);
+  const [exportNote, setExportNote] = useState<string | null>(null);
   const [visible, setVisible] = useState<Record<PartKey, boolean>>(readStoredVisibility);
   const [sectionXz, setSectionXz] = useState(readStoredSectionXz);
+  const faceSegs = useMemo(() => exportFaceSegmentsForSetup(setup), [setup]);
+  const bodySegs = useMemo(() => previewSegmentsForSetup(setup), [setup]);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
   const sectionRef = useRef(sectionXz);
@@ -346,7 +356,7 @@ const AssemblyView: React.FC<Props> = ({ setup, gapUm, orificeMm, washerMm }) =>
         gapMm: drawnGapMm,
         orificeMm: built.orificeMm,
         washerMm: built.washerMm,
-        segments: Math.min(40, Math.max(24, Math.round(24 + built.setup.nOrifices / 2))),
+        segments: previewSegmentsForSetup(built.setup),
       });
       if (cancel || !view.current) return;
 
@@ -354,7 +364,6 @@ const AssemblyView: React.FC<Props> = ({ setup, gapUm, orificeMm, washerMm }) =>
       live.content.clear();
 
       const parts: { key: PartKey; solid: typeof solids.disk; color: number; roughness: number }[] = [
-        { key: "distributor", solid: solids.distributor, color: 0x3d7ea6, roughness: 0.5 },
         { key: "stator", solid: solids.stator, color: 0x5f6f82, roughness: 0.55 },
         { key: "disk", solid: solids.disk, color: 0xd4a24c, roughness: 0.62 },
       ];
@@ -430,6 +439,35 @@ const AssemblyView: React.FC<Props> = ({ setup, gapUm, orificeMm, washerMm }) =>
     setVisible((current) => ({ ...current, [key]: !current[key] }));
   };
 
+  const downloadStl = async (part: StlPart) => {
+    if (exporting) return;
+    setExporting(part);
+    setExportNote(null);
+    try {
+      const result = await exportPartStl(
+        part,
+        { setup: pending.setup, orificeMm: pending.orificeMm, washerMm: pending.washerMm },
+        (progress) => {
+          if (progress.phase === "building") {
+            setExportNote(
+              `Building ${part}: contact face ${progress.faceSegments} seg (≤${STL_FORM_ERROR_MM * 1e3} µm), body ${progress.bodySegments} seg…`,
+            );
+          } else if (progress.phase === "serializing") {
+            setExportNote("Writing STL…");
+          }
+        },
+      );
+      setExportNote(
+        `Downloaded ${part} STL (face ${result.faceSegments} / body ${result.bodySegments} seg, ≤${result.formErrorUm} µm on contact).`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Export failed";
+      setExportNote(message);
+    } finally {
+      setExporting(null);
+    }
+  };
+
   // Solid-building HMR does not change setup params — rebuild automatically when assembly.ts updates.
   useEffect(() => {
     const hot = (import.meta as ImportMeta & {
@@ -447,14 +485,33 @@ const AssemblyView: React.FC<Props> = ({ setup, gapUm, orificeMm, washerMm }) =>
   return (
     <div>
       <div className="d-flex align-items-center gap-2 mb-2 flex-wrap">
-        <Button variant={stale ? "dark" : "outline-secondary"} size="sm" onClick={reload} disabled={building}>
+        <Button variant={stale ? "dark" : "outline-secondary"} size="sm" onClick={reload} disabled={building || !!exporting}>
           Reload CAD view
         </Button>
-        <Button variant="outline-secondary" size="sm" onClick={resetView} disabled={building}>
+        <Button variant="outline-secondary" size="sm" onClick={resetView} disabled={building || !!exporting}>
           Reset view
+        </Button>
+        <Button
+          variant="outline-dark"
+          size="sm"
+          onClick={() => void downloadStl("disk")}
+          disabled={building || !!exporting}
+          title={`Contact floor at ${faceSegs} seg (≤${STL_FORM_ERROR_MM * 1e3} µm); ribs/rim at ${bodySegs} seg`}
+        >
+          {exporting === "disk" ? "Exporting disk…" : "Download disk STL"}
+        </Button>
+        <Button
+          variant="outline-dark"
+          size="sm"
+          onClick={() => void downloadStl("stator")}
+          disabled={building || !!exporting}
+          title={`Contact plate at ${faceSegs} seg (≤${STL_FORM_ERROR_MM * 1e3} µm); ribs/torus/cones at ${bodySegs} seg`}
+        >
+          {exporting === "stator" ? "Exporting stator…" : "Download stator STL"}
         </Button>
         {stale ? <span className="small text-secondary">CAD or parameters changed — rebuild to see the new solids</span> : null}
         {building ? <span className="small text-secondary">Building…</span> : null}
+        {exportNote ? <span className="small text-secondary">{exportNote}</span> : null}
       </div>
       <div className="d-flex align-items-center gap-3 mb-2 flex-wrap">
         <span className="small text-secondary">Show</span>
